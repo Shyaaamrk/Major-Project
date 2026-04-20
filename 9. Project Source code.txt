@@ -1,0 +1,365 @@
+# ===== Robust Cell 1: CHECK + CONDITIONAL INSTALL (safe) =====
+import sys, importlib, subprocess, os, pkgutil
+
+print("Python:", sys.version.splitlines()[0])
+
+def has_pkg(name):
+    return pkgutil.find_loader(name) is not None
+
+# Ensure packaging library is available for version parsing
+for pkg, pip_name in [("packaging","packaging")]:
+    if has_pkg(pkg):
+        mod = importlib.import_module(pkg)
+        print(f"{pkg} found, version:", getattr(mod, "__version__", "unknown"))
+    else:
+        print(f"Installing {pip_name} ...")
+        !pip install -q {pip_name}
+        importlib.invalidate_caches()
+        try:
+            mod = importlib.import_module(pkg)
+            print(f"{pkg} installed, version:", getattr(mod, "__version__", "unknown"))
+        except Exception as e:
+            print(f"{pkg} import failed after install: {e}")
+
+from packaging.version import parse as parse_version
+
+# 1) Check TensorFlow and its dependency ml_dtypes
+
+# Desired TensorFlow version that is compatible with ml_dtypes >= 0.5.0
+TARGET_TF_VERSION = "2.19.0"
+
+tf_installed = has_pkg("tensorflow")
+current_tf_version = "0.0.0" # Default for comparison if not installed or old
+
+if tf_installed:
+    try:
+        import tensorflow as tf
+        current_tf_version = tf.__version__
+        print("TensorFlow found, version:", current_tf_version)
+    except Exception as e:
+        print(f"Warning: Could not import TensorFlow to check version: {e}. Assuming old or corrupted install.")
+        tf_installed = False # Force reinstall if import fails
+
+# Check ml_dtypes version (JAX requires >=0.5.0)
+ml_dtypes_version = "0.0.0"
+if has_pkg("ml_dtypes"):
+    try:
+        import ml_dtypes
+        ml_dtypes_version = ml_dtypes.__version__
+        print("ml_dtypes found, version:", ml_dtypes_version)
+    except Exception as e:
+        print(f"Warning: Could not import ml_dtypes to check version: {e}. Assuming old or corrupted install.")
+
+# Determine if we need to upgrade ml_dtypes or TensorFlow
+needs_ml_dtypes_upgrade = parse_version(ml_dtypes_version) < parse_version("0.5.0")
+needs_tf_upgrade = not tf_installed or parse_version(current_tf_version) < parse_version(TARGET_TF_VERSION)
+
+# If ml_dtypes needs upgrade, perform it first. This might also necessitate a TF upgrade.
+if needs_ml_dtypes_upgrade:
+    print(f"ml_dtypes version {ml_dtypes_version} is too old (JAX requires >=0.5.0). Upgrading ml-dtypes to >=0.5.0.")
+    !pip install -q --upgrade ml-dtypes>=0.5.0
+    print("Upgraded ml-dtypes.")
+    # If ml_dtypes was just upgraded, we must ensure TensorFlow is also at a compatible version.
+    needs_tf_upgrade = True
+
+# If TensorFlow needs upgrade/installation, perform it.
+if needs_tf_upgrade:
+    install_action = "Installing" if not tf_installed else "Upgrading"
+    print(f"{install_action} TensorFlow to {TARGET_TF_VERSION}.")
+    !pip install -q --upgrade tensorflow=={TARGET_TF_VERSION} # Use --upgrade even for first install to ensure dependencies
+    print(f"{install_action} TensorFlow.")
+    print("Restarting runtime now to load new packages...")
+    os.kill(os.getpid(), 9) # Colab will restart the runtime; re-run the notebook from top after restart
+
+# If we reached here without restarting, everything should be compatible and imported.
+# Try importing tensorflow again to confirm.
+try:
+    import tensorflow as tf
+    print("TensorFlow successfully imported:", tf.__version__)
+except Exception as e:
+    print(f"Error importing TensorFlow after checks: {e}. Please manually check your environment.")
+
+# 2) Check OpenCV
+if has_pkg("cv2"):
+    import cv2
+    print("OpenCV:", cv2.__version__)
+else:
+    print("Installing opencv-python-headless...")
+    !pip install -q opencv-python-headless==4.10.0.84
+    import importlib
+    importlib.invalidate_caches()
+    try:
+        import cv2
+        print("OpenCV installed:", cv2.__version__)
+    except Exception as e:
+        print("OpenCV import failed after install:", str(e))
+
+# 3) Check scikit-learn and matplotlib
+for pkg, pip_name in [("sklearn","scikit-learn"), ("matplotlib","matplotlib"), ("seaborn","seaborn")]:
+    if has_pkg(pkg):
+        mod = importlib.import_module(pkg)
+        print(f"{pkg} found, version:", getattr(mod, "__version__", "unknown"))
+    else:
+        print(f"Installing {pip_name} ...")
+        !pip install -q {pip_name}
+        importlib.invalidate_caches()
+        try:
+            mod = importlib.import_module(pkg)
+            print(f"{pkg} installed, version:", getattr(mod, "__version__", "unknown"))
+        except Exception as e:
+            print(f"{pkg} import failed after install: {e}")
+
+print("\n✅ Done checks. If this cell restarted the runtime, re-run the notebook from the top.")
+print("If you still see an error, copy the full RED error text and paste it here so I can diagnose.")
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers, models
+import matplotlib.pyplot as plt
+import numpy as np
+import cv2
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
+import os
+
+print("✅ Libraries imported successfully!")
+# ===== Cell 3 — Create Sample Varicose Vein Dataset =====
+import os
+from PIL import Image, UnidentifiedImageError
+import requests # Import requests for more robust downloading
+
+# Make directory structure
+!mkdir -p varicose_dataset/train/normal varicose_dataset/train/varicose
+!mkdir -p varicose_dataset/test/normal varicose_dataset/test/varicose
+
+# Define new, reliable image URLs (using public domain or known good sources)
+# Replaced original URLs with known working placeholder images for demonstration
+# In a real scenario, you would replace these with actual varicose/normal vein images
+# Using generic placeholder images from picsum.photos for now, as specific vein images are hard to find on public CDNs.
+image_urls = {
+    'varicose_dataset/train/normal/normal1.jpg': 'https://picsum.photos/id/10/640/480.jpg', # Generic image
+    'varicose_dataset/train/normal/normal2.jpg': 'https://picsum.photos/id/20/640/480.jpg', # Generic image
+    'varicose_dataset/train/varicose/varicose1.jpg': 'https://picsum.photos/id/30/640/480.jpg', # Generic image
+    'varicose_dataset/train/varicose/varicose2.jpg': 'https://picsum.photos/id/40/640/480.jpg', # Generic image
+}
+
+# Download images
+for path, url in image_urls.items():
+    print(f"Downloading {path.split('/')[-1]}...")
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        with open(path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: Could not download {url} to {path} - {e}")
+    except Exception as e:
+        print(f"ERROR: An unexpected error occurred downloading {url} to {path} - {e}")
+
+# Copy a few into test folders
+# Ensure these files exist before copying
+if os.path.exists('varicose_dataset/train/normal/normal1.jpg'):
+    !cp varicose_dataset/train/normal/normal1.jpg varicose_dataset/test/normal/normal1.jpg
+if os.path.exists('varicose_dataset/train/varicose/varicose1.jpg'):
+    !cp varicose_dataset/train/varicose/varicose1.jpg varicose_dataset/test/varicose/varicose1.jpg
+
+print("Verifying downloaded images...")
+corrupted_images = []
+for root, dirs, files in os.walk("varicose_dataset"):
+    for f in files:
+        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')):
+            file_path = os.path.join(root, f)
+            try:
+                img = Image.open(file_path)
+                img.verify() # Verify file integrity
+                img.close()
+            except UnidentifiedImageError as e:
+                print(f"ERROR: Unidentifiable image file: {file_path} - {e}")
+                corrupted_images.append(file_path)
+            except Exception as e:
+                print(f"ERROR: Could not open image: {file_path} - {e}")
+                corrupted_images.append(file_path)
+
+if corrupted_images:
+    print(f"‼️ Detected {len(corrupted_images)} potentially problematic image(s). Please check the source or replace them.")
+    print("These images will likely cause `UnidentifiedImageError` during data loading.")
+else:
+    print("✅ All downloaded images verified successfully!")
+
+print("✅ Sample dataset downloaded and ready!")
+
+# Show directory structure
+for root, dirs, files in os.walk("varicose_dataset"):
+    level = root.replace("varicose_dataset", "").count(os.sep)
+    indent = " " * 2 * level
+    print(f"{indent}{os.path.basename(root)}/")
+    for f in files:
+        print(f"{indent}  {f}")
+# ===== Cell 4 — Preprocessing =====
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+# Define image size and batch size
+img_size = 224
+batch_size = 8
+
+# Data augmentation & normalization for training
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=20,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    shear_range=0.1,
+    zoom_range=0.1,
+    horizontal_flip=True,
+    # validation_split removed for tiny dataset
+)
+
+# Train generator (using all available training data)
+train_generator = train_datagen.flow_from_directory(
+    'varicose_dataset/train',
+    target_size=(img_size, img_size),
+    batch_size=batch_size,
+    class_mode='binary',
+    # subset removed as there's no split
+)
+
+# Test data generator (no augmentation)
+test_datagen = ImageDataGenerator(rescale=1./255)
+test_generator = test_datagen.flow_from_directory(
+    'varicose_dataset/test',
+    target_size=(img_size, img_size),
+    batch_size=1,
+    class_mode='binary',
+    shuffle=False
+)
+
+print("\n✅ Data generators are ready!")
+# ===== Cell 5 — Build CNN Model =====
+from tensorflow.keras import layers, models
+
+# Define the CNN architecture
+model = models.Sequential([
+    # 1️⃣ Convolutional Block 1
+    layers.Conv2D(32, (3,3), activation='relu', input_shape=(img_size, img_size, 3)),
+    layers.MaxPooling2D(2,2),
+
+    # 2️⃣ Convolutional Block 2
+    layers.Conv2D(64, (3,3), activation='relu'),
+    layers.MaxPooling2D(2,2),
+
+    # 3️⃣ Convolutional Block 3
+    layers.Conv2D(128, (3,3), activation='relu'),
+    layers.MaxPooling2D(2,2),
+
+    # 4️⃣ Flatten + Fully Connected Layers
+    layers.Flatten(),
+    layers.Dense(128, activation='relu'),
+    layers.Dropout(0.5),  # Prevent overfitting
+    layers.Dense(1, activation='sigmoid')  # Binary output (0=Normal, 1=Varicose)
+])
+
+# Compile the model
+model.compile(
+    optimizer='adam',
+    loss='binary_crossentropy',
+    metrics=['accuracy']
+)
+
+# Summary
+model.summary()
+# ===== Cell 6 — Train the Model =====
+import matplotlib.pyplot as plt
+
+# Train for a few epochs (increase epochs if you have more data)
+history = model.fit(
+    train_generator,
+    epochs=10,  # You can increase this to 20 or 25 for better results
+    verbose=1
+)
+
+# Plot training and validation accuracy
+plt.figure(figsize=(8,5))
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+# There is no validation_accuracy in history because no validation_data was provided
+# plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.title('Model Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
+
+# Plot training and validation loss
+plt.figure(figsize=(8,5))
+plt.plot(history.history['loss'], label='Train Loss')
+# There is no validation_loss in history because no validation_data was provided
+# plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Model Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+print("✅ Model training complete!")
+# ===== Cell 7 — Evaluate Model on Validation Data =====
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
+import numpy as np
+
+# Get predictions using the test_generator
+test_generator.reset()
+predictions = model.predict(test_generator)
+predicted_classes = (predictions > 0.5).astype("int32").flatten()
+
+# True labels from test_generator
+true_classes = test_generator.classes
+class_labels = list(test_generator.class_indices.keys())
+
+# Confusion matrix
+cm = confusion_matrix(true_classes, predicted_classes)
+
+plt.figure(figsize=(6,5))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_labels, yticklabels=class_labels)
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.title('Confusion Matrix')
+plt.show()
+
+# Classification report
+report = classification_report(true_classes, predicted_classes, target_names=class_labels)
+print("📊 Classification Report:\n", report)
+
+# Accuracy
+accuracy = np.mean(predicted_classes == true_classes)
+print(f"✅ Overall Model Accuracy: {accuracy*100:.2f}%")
+# ===== Cell 8 — Upload & Predict Varicose Vein Image =====
+from google.colab import files
+from tensorflow.keras.preprocessing import image
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+
+# Upload an image
+uploaded = files.upload()
+
+for filename in uploaded.keys():
+    # Load and preprocess the image
+    img_path = filename
+    img = image.load_img(img_path, target_size=(img_size, img_size))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0) / 255.0  # Normalize
+
+    # Make prediction
+    prediction = model.predict(img_array)
+    result = "🩺 Varicose Vein Detected" if prediction[0][0] > 0.5 else "✅ Normal Vein"
+
+    # Confidence
+    confidence = prediction[0][0] if prediction[0][0] > 0.5 else (1 - prediction[0][0])
+
+    # Display result
+    plt.imshow(plt.imread(img_path))
+    plt.axis('off')
+    plt.title(f"{result}\nConfidence: {confidence*100:.2f}%")
+    plt.show()
+
+    print(f"Prediction: {result}")
+    print(f"Confidence Score: {confidence*100:.2f}%")
